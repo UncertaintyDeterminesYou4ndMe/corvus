@@ -87,7 +87,7 @@ mod tests {
     use crate::config::env_vars::EnvConfig;
 
     fn make_config(env: EnvConfig) -> ClaudeConfig {
-        ClaudeConfig { env, settings: None, settings_local: None }
+        ClaudeConfig { env, settings: None }
     }
 
     #[test]

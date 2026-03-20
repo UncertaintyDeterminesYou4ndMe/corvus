@@ -12,7 +12,6 @@ pub use settings::Settings;
 pub struct ClaudeConfig {
     pub env: EnvConfig,
     pub settings: Option<Settings>,
-    pub settings_local: Option<Settings>,
 }
 
 impl ClaudeConfig {
@@ -21,7 +20,6 @@ impl ClaudeConfig {
         Ok(Self {
             env: EnvConfig::load(),
             settings: settings::load_main_settings()?,
-            settings_local: settings::load_local_settings()?,
         })
     }
 

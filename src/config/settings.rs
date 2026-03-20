@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Settings {
     #[serde(default)]
     pub model: Option<String>,
@@ -21,6 +22,7 @@ pub struct Settings {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[allow(dead_code)]
 pub struct Permissions {
     #[serde(default)]
     pub allow: Vec<String>,
@@ -51,14 +53,6 @@ pub fn load_main_settings() -> Result<Option<Settings>> {
         return Ok(None);
     };
     load_settings(&dir.join("settings.json"))
-}
-
-/// Load ~/.claude/settings.local.json
-pub fn load_local_settings() -> Result<Option<Settings>> {
-    let Some(dir) = claude_dir() else {
-        return Ok(None);
-    };
-    load_settings(&dir.join("settings.local.json"))
 }
 
 /// Check if a settings file exists and return its path.

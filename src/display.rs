@@ -259,9 +259,7 @@ pub fn print_stats_report(
 ) -> Result<()> {
     match format {
         OutputFormat::Json => {
-            #[derive(Serialize)]
-            struct Report<'a> { stats: &'a StatsCache, usage: &'a UsageInfo }
-            // UsageInfo doesn't derive Serialize, so we'll just output stats for JSON
+            // UsageInfo doesn't serialize; output stats only
             println!("{}", serde_json::to_string_pretty(stats)?);
         }
         OutputFormat::Text => print_stats_report_text(stats, usage, daily, by_model),

@@ -11,7 +11,6 @@ pub enum ProviderType {
     NewApiOneApi,
     GoogleVertex,
     CustomRelay(String),
-    Unknown,
 }
 
 impl fmt::Display for ProviderType {
@@ -23,7 +22,6 @@ impl fmt::Display for ProviderType {
             Self::NewApiOneApi => write!(f, "NewAPI/OneAPI relay service"),
             Self::GoogleVertex => write!(f, "Google Vertex AI"),
             Self::CustomRelay(domain) => write!(f, "custom relay ({})", domain),
-            Self::Unknown => write!(f, "unknown"),
         }
     }
 }

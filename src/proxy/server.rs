@@ -193,6 +193,7 @@ async fn handle_request(
 }
 
 /// Forward request using ureq (blocking). Returns (status, headers, body).
+#[allow(clippy::type_complexity)]
 fn forward_request(
     url: &str,
     method: &str,

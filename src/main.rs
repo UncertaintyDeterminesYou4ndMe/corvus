@@ -1,3 +1,5 @@
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::useless_format)]
 mod cmd;
 mod config;
 mod diagnosis;
