@@ -1,0 +1,45 @@
+[package]
+name = "corvus"
+version = "0.1.0"
+edition = "2021"
+description = "Corvus - Claude Code diagnostic CLI. Detect configuration mismatches, validate model names, analyze API requests."
+license = "MIT"
+keywords = ["cli", "claude-code", "diagnostics", "api"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1.0"
+thiserror = "2.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+colored = "2"
+dirs = "6"
+ureq = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+
+# sniff proxy (feature-gated)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"], optional = true }
+hyper = { version = "1", features = ["http1", "server", "client"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+
+# shell completions
+clap_complete = { version = "4", optional = true }
+
+[features]
+default = ["sniff", "completions"]
+sniff = ["tokio", "hyper", "hyper-util", "http-body-util", "bytes"]
+completions = ["clap_complete"]
+
+[dev-dependencies]
+insta = { version = "1", features = ["json"] }
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
