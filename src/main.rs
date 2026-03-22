@@ -117,6 +117,19 @@ enum Commands {
         /// forward if neither is provided.
         #[arg(long, short = 'u')]
         upstream: Option<String>,
+
+        /// Launch a command through the proxy instead of waiting manually.
+        ///
+        /// Corvus starts the proxy, then runs the command with ANTHROPIC_BASE_URL
+        /// automatically pointed at localhost. Proxy exits when the command exits.
+        ///
+        ///   corvus sniff -- claude
+        ///   corvus sniff -u https://api.example.com -- claude --verbose
+        ///
+        /// Use this when debugging a session that's already showing errors: kill
+        /// the old session and relaunch it through sniff in one command.
+        #[arg(last = true)]
+        launch: Vec<String>,
     },
 }
 
@@ -155,8 +168,8 @@ fn main() -> Result<()> {
             clap_complete::generate(shell, &mut cmd, "corvus", &mut std::io::stdout());
         }
         #[cfg(feature = "sniff")]
-        Commands::Sniff { port, upstream } => {
-            cmd::sniff::run(port, upstream.as_deref(), cli.verbose)?;
+        Commands::Sniff { port, upstream, launch } => {
+            cmd::sniff::run(port, upstream.as_deref(), cli.verbose, &launch)?;
         }
     }
 

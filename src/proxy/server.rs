@@ -22,6 +22,27 @@ struct ProxyState {
 }
 
 pub async fn run_proxy(port: u16, upstream: &str, verbose: u8) -> Result<()> {
+    let listener = bind_listener(port).await?;
+    // Print the manual-use banner (launcher mode prints its own banner).
+    eprintln!();
+    eprintln!("\x1b[1mCorvus Sniff\x1b[0m — Listening on :{} → {}", port, upstream);
+    eprintln!("\x1b[2m═══════════════════════════════════════════════════════════\x1b[0m");
+    eprintln!();
+    eprintln!("  Set this to use the proxy:");
+    eprintln!("  \x1b[36mexport ANTHROPIC_BASE_URL=http://localhost:{}\x1b[0m", port);
+    eprintln!();
+    run_proxy_with_listener(listener, upstream, verbose).await
+}
+
+/// Bind the listener first (so callers can confirm the port is ready before spawning subprocesses).
+pub async fn bind_listener(port: u16) -> Result<TcpListener> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpListener::bind(addr).await
+        .with_context(|| format!("Failed to bind to port {port} — is it already in use?"))
+}
+
+/// Accept-loop only — no banner printed. Used by launcher mode (banner printed by caller).
+pub async fn run_proxy_with_listener(listener: TcpListener, upstream: &str, verbose: u8) -> Result<()> {
     let env = EnvConfig::load();
     let provider_type = provider::detect(&env);
 
@@ -30,18 +51,6 @@ pub async fn run_proxy(port: u16, upstream: &str, verbose: u8) -> Result<()> {
         provider_type,
         verbose,
     });
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = TcpListener::bind(addr).await
-        .with_context(|| format!("Failed to bind to port {}", port))?;
-
-    eprintln!();
-    eprintln!("\x1b[1mCorvus Sniff\x1b[0m — Listening on :{} → {}", port, upstream);
-    eprintln!("\x1b[2m═══════════════════════════════════════════════════════════\x1b[0m");
-    eprintln!();
-    eprintln!("  Set this to use the proxy:");
-    eprintln!("  \x1b[36mexport ANTHROPIC_BASE_URL=http://localhost:{}\x1b[0m", port);
-    eprintln!();
 
     loop {
         let (stream, _remote) = listener.accept().await?;
