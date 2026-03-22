@@ -1,11 +1,13 @@
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full, combinators::BoxBody};
-use hyper::body::Incoming;
+use futures_util::StreamExt;
+use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
+use hyper::body::{Frame, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -15,10 +17,13 @@ use super::analyzer;
 use crate::config::EnvConfig;
 use crate::diagnosis::provider::{self, ProviderType};
 
+type RespBody = BoxBody<Bytes, Infallible>;
+
 struct ProxyState {
     upstream: String,
     provider_type: ProviderType,
     verbose: u8,
+    client: reqwest::Client,
 }
 
 pub async fn run_proxy(port: u16, upstream: &str, verbose: u8) -> Result<()> {
@@ -50,6 +55,10 @@ pub async fn run_proxy_with_listener(listener: TcpListener, upstream: &str, verb
         upstream: upstream.trim_end_matches('/').to_string(),
         provider_type,
         verbose,
+        client: reqwest::Client::builder()
+            .user_agent("corvus-sniff/0.1")
+            .build()
+            .context("Failed to build HTTP client")?,
     });
 
     loop {
@@ -78,9 +87,9 @@ pub async fn run_proxy_with_listener(listener: TcpListener, upstream: &str, verb
 async fn handle_request(
     req: Request<Incoming>,
     state: &ProxyState,
-) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+) -> Result<Response<RespBody>, hyper::Error> {
     let start = Instant::now();
-    let method = req.method().clone();
+    let method = req.method().to_string();
     let path = req.uri().path_and_query()
         .map(|pq| pq.to_string())
         .unwrap_or_else(|| "/".to_string());
@@ -92,19 +101,11 @@ async fn handle_request(
     let beta_header = req.headers().get("anthropic-beta")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-    let _api_key = req.headers().get("authorization")
-        .or_else(|| req.headers().get("x-api-key"))
-        .and_then(|v| v.to_str().ok())
-        .map(String::from);
-    let _content_type = req.headers().get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(String::from);
 
-    // Collect all headers for forwarding
+    // Collect all headers for forwarding (filter hop-by-hop)
     let orig_headers: Vec<(String, String)> = req.headers().iter()
         .filter(|(name, _)| {
             let n = name.as_str();
-            // Don't forward hop-by-hop or host headers
             n != "host" && n != "connection" && n != "transfer-encoding"
         })
         .filter_map(|(name, val)| {
@@ -129,7 +130,7 @@ async fn handle_request(
         .unwrap_or_default();
 
     let mut analysis = analyzer::RequestAnalysis {
-        method: method.to_string(),
+        method: method.clone(),
         path: path.clone(),
         model,
         message_count: msg_count,
@@ -139,8 +140,6 @@ async fn handle_request(
         is_streaming,
         warnings: Vec::new(),
     };
-
-    // Check for issues
     analysis.warnings = analyzer::check_request(&analysis, &state.provider_type);
 
     // Print request log
@@ -150,123 +149,98 @@ async fn handle_request(
         print!("{}", analyzer::format_body_dump("request body", &body_bytes));
     }
 
-    // Forward request to upstream
+    // Build upstream URL and reqwest request
     let upstream_url = format!("{}{}", state.upstream, path);
+    let req_method = method.parse::<reqwest::Method>()
+        .unwrap_or(reqwest::Method::POST);
 
-    // Build the forwarding request using ureq (blocking in spawn_blocking to not block tokio)
-    let body_vec = body_bytes.to_vec();
-    let method_str = method.to_string();
-    let headers_clone = orig_headers.clone();
-    let verbose = state.verbose;
+    let mut req_builder = state.client.request(req_method, &upstream_url);
+    for (name, value) in &orig_headers {
+        req_builder = req_builder.header(name.as_str(), value.as_str());
+    }
+    if !body_bytes.is_empty() {
+        req_builder = req_builder.body(body_bytes.to_vec());
+    }
 
-    let upstream_result = tokio::task::spawn_blocking(move || {
-        forward_request(&upstream_url, &method_str, &headers_clone, &body_vec, verbose)
-    }).await;
-
-    let elapsed = start.elapsed().as_millis();
-
-    match upstream_result {
-        Ok(Ok((status, resp_headers, resp_body))) => {
-            let output_tokens = extract_output_tokens(&resp_body);
-            let error_message = if status >= 400 {
-                extract_error_message(&resp_body)
-            } else {
-                None
-            };
-
-            let resp_analysis = analyzer::ResponseAnalysis {
-                status,
-                duration_ms: elapsed,
-                output_tokens,
-                error_message,
-            };
-            print!("{}", analyzer::format_response_log(&resp_analysis));
-            if state.verbose >= 2 {
-                print!("{}", analyzer::format_body_dump("response body", &resp_body));
-            }
-
-            // Build response
-            let mut builder = Response::builder().status(status);
-            for (name, value) in &resp_headers {
-                builder = builder.header(name.as_str(), value.as_str());
-            }
-            let body = Full::new(Bytes::from(resp_body))
-                .map_err(|never| match never {})
-                .boxed();
-            Ok(builder.body(body).unwrap())
-        }
-        Ok(Err(e)) => {
+    // Send to upstream
+    let upstream_resp = match req_builder.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let elapsed = start.elapsed().as_millis();
             eprintln!("  \x1b[31m→ Upstream error ({}ms): {}\x1b[0m", elapsed, e);
-            Ok(error_response(502, &format!("Upstream error: {}", e)))
+            return Ok(error_response(502, &format!("Upstream error: {}", e)));
         }
-        Err(e) => {
-            eprintln!("  \x1b[31m→ Internal error: {}\x1b[0m", e);
-            Ok(error_response(500, "Internal proxy error"))
-        }
-    }
-}
-
-/// Forward request using ureq (blocking). Returns (status, headers, body).
-#[allow(clippy::type_complexity)]
-fn forward_request(
-    url: &str,
-    method: &str,
-    headers: &[(String, String)],
-    body: &[u8],
-    _verbose: u8,  // reserved for future per-request debug output
-) -> Result<(u16, Vec<(String, String)>, Vec<u8>)> {
-    let mut req = match method {
-        "POST" => ureq::post(url),
-        "GET" => ureq::get(url),
-        "PUT" => ureq::put(url),
-        "DELETE" => ureq::delete(url),
-        "PATCH" => ureq::patch(url),
-        _ => ureq::request(method, url),
     };
 
-    for (name, value) in headers {
-        req = req.set(name, value);
+    let status = upstream_resp.status().as_u16();
+
+    // Build response headers
+    let mut builder = Response::builder().status(status);
+    for (name, val) in upstream_resp.headers() {
+        if let Ok(v) = val.to_str() {
+            builder = builder.header(name.as_str(), v);
+        }
     }
 
-    let result = if method == "GET" || method == "DELETE" || body.is_empty() {
-        req.call()
+    if is_streaming && status < 400 {
+        // ── Streaming path: pipe bytes to client as they arrive ──────────
+        let elapsed = start.elapsed().as_millis();
+        print!("{}", analyzer::format_response_log(&analyzer::ResponseAnalysis {
+            status,
+            duration_ms: elapsed,
+            output_tokens: None,
+            error_message: None,
+            is_streaming: true,
+        }));
+
+        let verbose = state.verbose;
+        let byte_stream = upstream_resp.bytes_stream().map(move |chunk| {
+            let bytes = chunk.unwrap_or_default();
+            // With -vv, print each SSE line as it arrives
+            if verbose >= 2 && !bytes.is_empty() {
+                if let Ok(text) = std::str::from_utf8(&bytes) {
+                    for line in text.lines() {
+                        if !line.is_empty() {
+                            eprintln!("  \x1b[2m│ {}\x1b[0m", line);
+                        }
+                    }
+                }
+            }
+            Ok::<_, Infallible>(Frame::data(bytes))
+        });
+
+        let body = BodyExt::boxed(StreamBody::new(byte_stream));
+        Ok(builder.body(body).unwrap())
     } else {
-        req.send_bytes(body)
-    };
+        // ── Buffered path: collect entire response, then analyze ──────────
+        let resp_bytes = match upstream_resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("  \x1b[31m→ Failed to read response body: {}\x1b[0m", e);
+                return Ok(error_response(502, "Failed to read upstream response"));
+            }
+        };
 
-    match result {
-        Ok(resp) => {
-            let status = resp.status();
-            let resp_headers: Vec<(String, String)> = resp.headers_names().iter()
-                .filter_map(|name| {
-                    resp.header(name).map(|val| (name.clone(), val.to_string()))
-                })
-                .collect();
+        let elapsed = start.elapsed().as_millis();
+        let output_tokens = extract_output_tokens(&resp_bytes);
+        let error_message = if status >= 400 { extract_error_message(&resp_bytes) } else { None };
 
-            let mut body_buf = Vec::new();
-            use std::io::Read;
-            resp.into_reader().read_to_end(&mut body_buf)
-                .context("Failed to read upstream response body")?;
+        print!("{}", analyzer::format_response_log(&analyzer::ResponseAnalysis {
+            status,
+            duration_ms: elapsed,
+            output_tokens,
+            error_message,
+            is_streaming: false,
+        }));
 
-            Ok((status, resp_headers, body_buf))
+        if state.verbose >= 2 {
+            print!("{}", analyzer::format_body_dump("response body", &resp_bytes));
         }
-        Err(ureq::Error::Status(status, resp)) => {
-            let resp_headers: Vec<(String, String)> = resp.headers_names().iter()
-                .filter_map(|name| {
-                    resp.header(name).map(|val| (name.clone(), val.to_string()))
-                })
-                .collect();
 
-            let mut body_buf = Vec::new();
-            use std::io::Read;
-            resp.into_reader().read_to_end(&mut body_buf)
-                .context("Failed to read upstream error body")?;
-
-            Ok((status, resp_headers, body_buf))
-        }
-        Err(e) => {
-            anyhow::bail!("Upstream request failed: {}", e)
-        }
+        let body = Full::new(resp_bytes)
+            .map_err(|_: Infallible| unreachable!())
+            .boxed();
+        Ok(builder.body(body).unwrap())
     }
 }
 
@@ -288,16 +262,13 @@ fn extract_error_message(body: &[u8]) -> Option<String> {
         })
 }
 
-fn error_response(status: u16, msg: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
+fn error_response(status: u16, msg: &str) -> Response<RespBody> {
     let body = serde_json::json!({
-        "error": {
-            "type": "proxy_error",
-            "message": msg
-        }
+        "error": { "type": "proxy_error", "message": msg }
     });
-    let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
-    let body = Full::new(Bytes::from(body_bytes))
-        .map_err(|never| match never {})
+    let body_bytes = Bytes::from(serde_json::to_vec(&body).unwrap_or_default());
+    let body = Full::new(body_bytes)
+        .map_err(|_: Infallible| unreachable!())
         .boxed();
     Response::builder()
         .status(status)

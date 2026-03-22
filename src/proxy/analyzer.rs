@@ -24,6 +24,7 @@ pub struct ResponseAnalysis {
     pub duration_ms: u128,
     pub output_tokens: Option<u64>,
     pub error_message: Option<String>,
+    pub is_streaming: bool,
 }
 
 /// Parse the request body (JSON) to extract model, messages, tools.
@@ -182,7 +183,11 @@ pub fn format_response_log(resp: &ResponseAnalysis) -> String {
         format!("{}", resp.status).red().to_string()
     };
 
-    let mut out = format!("  → {} ({:.1}s", status_str, resp.duration_ms as f64 / 1000.0);
+    let mut out = if resp.is_streaming {
+        format!("  → {} (streaming, {:.1}s first byte", status_str, resp.duration_ms as f64 / 1000.0)
+    } else {
+        format!("  → {} ({:.1}s", status_str, resp.duration_ms as f64 / 1000.0)
+    };
 
     if let Some(tokens) = resp.output_tokens {
         out.push_str(&format!(", {} output tokens", tokens));
