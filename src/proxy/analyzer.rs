@@ -147,6 +147,31 @@ pub fn format_request_log(analysis: &RequestAnalysis, timestamp: &str) -> String
     out
 }
 
+/// Format a verbose body dump (pretty JSON, or truncated raw).
+pub fn format_body_dump(label: &str, body: &[u8]) -> String {
+    if body.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("  {} {}\n", "┌─".dimmed(), label.dimmed());
+    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(body) {
+        // Mask api_key field if present
+        let pretty = serde_json::to_string_pretty(&val).unwrap_or_default();
+        for line in pretty.lines() {
+            out.push_str(&format!("  {} {}\n", "│".dimmed(), line.dimmed()));
+        }
+    } else {
+        // Non-JSON (e.g. streaming chunks): show first 512 bytes
+        let preview = std::str::from_utf8(&body[..body.len().min(512)])
+            .unwrap_or("<binary>");
+        out.push_str(&format!("  {} {}\n", "│".dimmed(), preview.dimmed()));
+        if body.len() > 512 {
+            out.push_str(&format!("  {} … ({} bytes total)\n", "│".dimmed(), body.len()));
+        }
+    }
+    out.push_str(&format!("  {}\n", "└─".dimmed()));
+    out
+}
+
 /// Format a response log line.
 pub fn format_response_log(resp: &ResponseAnalysis) -> String {
     let status_str = if resp.status < 300 {

@@ -81,15 +81,41 @@ enum Commands {
         shell: ShellType,
     },
 
-    /// Start local proxy to intercept and analyze Claude Code API requests
+    /// Start a local HTTP proxy that intercepts and analyzes Claude Code API requests
+    ///
+    /// Corvus listens on HTTP (plain text) on localhost and forwards every request
+    /// to the real upstream over HTTPS. No certificates or MITM setup required.
+    ///
+    ///   Claude Code ─HTTP→ corvus [:port] ─HTTPS→ upstream (Anthropic / relay / Bedrock)
+    ///
+    /// Quick start (two terminals):
+    ///
+    ///   # Terminal 1 — start the proxy
+    ///   corvus sniff --port 8080
+    ///
+    ///   # Terminal 2 — point a NEW Claude Code session at the proxy
+    ///   ANTHROPIC_BASE_URL=http://localhost:8080 claude
+    ///
+    /// IMPORTANT: Only processes started after setting ANTHROPIC_BASE_URL will be
+    /// intercepted. Existing sessions keep their original URL and bypass the proxy.
+    ///
+    /// Verbosity flags:
+    ///   -v   Pretty-print the request JSON body (model, messages, tools)
+    ///   -vv  Pretty-print both request and response JSON bodies
+    ///
+    /// API keys are never printed. The proxy forwards them as-is but omits them
+    /// from all log output.
     #[cfg(feature = "sniff")]
     Sniff {
         /// Local port to listen on
         #[arg(short, long, default_value = "8080")]
         port: u16,
 
-        /// Upstream URL to forward requests to (default: reads ANTHROPIC_BASE_URL)
-        #[arg(long)]
+        /// Upstream URL to forward to (default: reads ANTHROPIC_BASE_URL env var)
+        ///
+        /// Must be set here or via ANTHROPIC_BASE_URL — corvus has nowhere else to
+        /// forward if neither is provided.
+        #[arg(long, short = 'u')]
         upstream: Option<String>,
     },
 }

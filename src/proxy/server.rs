@@ -137,6 +137,9 @@ async fn handle_request(
     // Print request log
     let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
     print!("{}", analyzer::format_request_log(&analysis, &timestamp));
+    if state.verbose >= 1 {
+        print!("{}", analyzer::format_body_dump("request body", &body_bytes));
+    }
 
     // Forward request to upstream
     let upstream_url = format!("{}{}", state.upstream, path);
@@ -155,7 +158,6 @@ async fn handle_request(
 
     match upstream_result {
         Ok(Ok((status, resp_headers, resp_body))) => {
-            // Try to extract output tokens from response
             let output_tokens = extract_output_tokens(&resp_body);
             let error_message = if status >= 400 {
                 extract_error_message(&resp_body)
@@ -170,6 +172,9 @@ async fn handle_request(
                 error_message,
             };
             print!("{}", analyzer::format_response_log(&resp_analysis));
+            if state.verbose >= 2 {
+                print!("{}", analyzer::format_body_dump("response body", &resp_body));
+            }
 
             // Build response
             let mut builder = Response::builder().status(status);
@@ -199,7 +204,7 @@ fn forward_request(
     method: &str,
     headers: &[(String, String)],
     body: &[u8],
-    _verbose: u8,
+    _verbose: u8,  // reserved for future per-request debug output
 ) -> Result<(u16, Vec<(String, String)>, Vec<u8>)> {
     let mut req = match method {
         "POST" => ureq::post(url),
